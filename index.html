@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="sv">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>APK Scanner Live 🍻</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            margin: 15px;
+            background-color: #f5f5f7;
+            color: #1d1d1f;
+            text-align: center;
+        }
+        .container {
+            max-width: 450px;
+            margin: 0 auto;
+            background: white;
+            padding: 20px;
+            border-radius: 16px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+        }
+        .setup-section {
+            background: #f2f2f7;
+            padding: 12px;
+            border-radius: 10px;
+            margin-bottom: 15px;
+            text-align: left;
+        }
+        .setup-section label {
+            display: block;
+            font-weight: 600;
+            margin-top: 8px;
+            font-size: 13px;
+        }
+        input[type="number"] {
+            width: 100%;
+            padding: 10px;
+            margin-top: 4px;
+            border: 1px solid #d1d1d6;
+            border-radius: 8px;
+            font-size: 16px;
+            box-sizing: border-box;
+        }
+        .quick-buttons {
+            display: flex;
+            gap: 4px;
+            margin-top: 6px;
+        }
+        .quick-btn {
+            flex: 1;
+            background: #e5e5ea;
+            border: none;
+            padding: 6px;
+            font-size: 12px;
+            border-radius: 6px;
+            cursor: pointer;
+        }
+        .quick-btn:active { background: #d1d1d6; }
+        
+        /* Kamerarutan */
+        .video-container {
+            position: relative;
+            width: 100%;
+            height: 200px;
+            background: #000;
+            border-radius: 12px;
+            overflow: hidden;
+            margin-bottom: 15px;
+        }
+        video {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+        /* Sikte för prislappen */
+        .scanner-laser {
+            position: absolute;
+            top: 50%;
+            left: 5%;
+            right: 5%;
+            height: 2px;
+            background: red;
+            box-shadow: 0 0 8px red;
+            opacity: 0.7;
+        }
+
+        .result-box {
+            padding: 15px;
+            background-color: #1c1c1e;
+            color: white;
+            border-radius: 12px;
+        }
+        .apk-value {
+            font-size: 48px;
+            font-weight: 900;
+            color: #30d158;
+            margin: 5px 0;
+        }
+        .status-text {
+            font-size: 14px;
+            color: #aeaeae;
+        }
+    </style>
+    <!-- Vi använder Tesseract för live-avläsning -->
+    <script src="https://jsdelivr.net"></script>
+</head>
+<body>
+
+<div class="container">
+    <h2>APK Live-Scanner 🍻</h2>
+    
+    <div class="setup-section">
+        <label>1. Volym (ml):</label>
+        <input type="number" id="volume" value="500">
+        <div class="quick-buttons">
+            <button class="quick-btn" onclick="setVol(330)">33 cl</button>
+            <button class="quick-btn" onclick="setVol(440)">44 cl</button>
+            <button class="quick-btn" onclick="setVol(500)">50 cl</button>
+            <button class="quick-btn" onclick="setVol(750)">75 cl</button>
+        </div>
+
+        <label>2. Alkoholhalt (%):</label>
+        <input type="number" id="abv" value="5.2" step="0.1">
+        <div class="quick-buttons">
+            <button class="quick-btn" onclick="setAbv(5.2)">5.2%</button>
+            <button class="quick-btn" onclick="setAbv(7.0)">7.0%</button>
+            <button class="quick-btn" onclick="setAbv(12.0)">12%</button>
+            <button class="quick-btn" onclick="setAbv(40.0)">40%</button>
+        </div>
+    </div>
+
+    <!-- Live Kamerafönster -->
+    <div class="video-container">
+        <video id="webcam" autoplay playsinline></video>
+        <div class="scanner-laser"></div>
+    </div>
+
+    <div class="result-box">
+        <div class="status-text" id="status">Startar kameran... Vänligen ge tillåtelse.</div>
+        <div class="apk-value" id="apk-result">0.00</div>
+        <div style="font-size: 13px; color: #aeaeae;">Alkohol Per Krona (APK)</div>
+        <hr style="border: 0; border-top: 1px solid #3a3a3c; margin: 10px 0;">
+        <p style="font-size: 13px; color: #aeaeae; margin: 0;">
+            Avläst pris på hyllan: <span id="detected-price" style="color:white; font-weight:bold;">-</span> kr
+        </p>
+    </div>
+</div>
+
+<!-- Dold rityta för att stjäla bildrutor från videon -->
+<canvas id="hidden-canvas" style="display:none;"></canvas>
+
+<script>
+    const video = document.getElementById('webcam');
+    const canvas = document.getElementById('hidden-canvas');
+    const statusText = document.getElementById('status');
+    const apkResult = document.getElementById('apk-result');
+    const detectedPriceText = document.getElementById('detected-price');
+
+    function setVol(ml) { document.getElementById('volume').value = ml; }
+    function setAbv(pct) { document.getElementById('abv').value = pct; }
+
+    let worker = null;
+    let isScanning = false;
+
+    // 1. Starta iPhonens bakkamera direkt när sidan laddas
+    async function initKamera() {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({
+                video: { facingMode: { exact: "environment" } }, // Tvingar baksidekamera
+                audio: false
+            });
+            video.srcObject = stream;
+            statusText.innerText = "Laddar AI-motor...";
+            initAI();
+        } catch (err) {
+            // Fallback om "exact environment" nekas (t.ex. på dator under test)
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+                video.srcObject = stream;
+                statusText.innerText = "Laddar AI-motor...";
+                initAI();
+            } catch (e) {
+                statusText.innerText = "Kameran blockeras. Kontrollera Safari-inställningarna.";
+            }
+        }
+    }
+
+    // 2. Starta Tesseract-motorn i bakgrunden utan att krascha iPhone 15
+    async function initAI() {
+        try {
+            worker = await Tesseract.createWorker('swe', 1, {
+                workerPath: 'https://jsdelivr.net',
+                corePath: 'https://jsdelivr.net',
+            });
+            statusText.innerText = "Håll kameran stadigt mot priset...";
+            isScanning = true;
+            loopScanning(); // Starta loopen
+        } catch (err) {
+            statusText.innerText = "Kunde inte starta AI-motorn.";
+            console.error(err);
+        }
+    }
+
+    // 3. Ta en bildruta varannan sekund och skanna
+    async function loopScanning() {
+        if (!isScanning) return;
+
+        // Rita av videorutan till vår dolda canvas (i låg upplösning så det går fort!)
+        const ctx = canvas.getContext('2d');
+        canvas.width = 400; // Liten bredd = blixtsnabb analys och ingen minneskrasch
+        canvas.height = (video.videoHeight / video.videoWidth) * canvas.width;
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.7);
+
+        try {
+            const { data: { text } } = await worker.recognize(dataUrl);
+            tolkaText(text);
+        } catch (e) {
+            console.log("Scan-miss, försöker igen...");
+        }
+
+        // Vänta 1.5 sekund innan nästa scanning görs för att spara batteri/prestanda
+        setTimeout(loopScanning, 1500);
+    }
+
+    function tolkaText(text) {
+        console.log("Live text:", text);
+        // Letar efter priser som slutar på decimaler (t.ex. 24.90, 19,50, 45:)
+        const regex = /\b\d+(?:[\.,:]\d{2})?\b/g;
+        const matches = text.match(regex);
+
+        if (matches && matches.length > 0) {
+            // Sortera ut rimliga alkoholpriser
+            const priser = matches
+                .map(m => m.replace(':', '.').replace(',', '.'))
+                .map(m => parseFloat(m))
+                .filter(p => !isNaN(p) && p >= 8 && p < 400);
+
+            if (priser.length > 0) {
+                let hittatPris = priser[0];
+                detectedPriceText.innerText = hittatPris.toFixed(2);
+                
+                // Räkna ut APK direkt
+                const volym = parseFloat(document.getElementById('volume').value);
+                const alkohol = parseFloat(document.getElementById('abv').value);
+                
+                const renAlkohol = volym * (alkohol / 100);
+                const apk = renAlkohol / hittatPris;
+                
+                apkResult.innerText = apk.toFixed(2);
+                statusText.innerText = "Pris avläst!";
+                return;
+            }
+        }
+    }
+
+    // Starta direkt vid laddning
+    window.addEventListener('DOMContentLoaded', initKamera);
+</script>
+
+</body>
+</html>
