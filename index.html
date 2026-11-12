@@ -103,7 +103,7 @@
         }
     </style>
     <!-- Vi använder Tesseract för live-avläsning -->
-    <script src="https://jsdelivr.net"></script>
+    <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 </head>
 <body>
 
@@ -163,53 +163,55 @@
     let worker = null;
     let isScanning = false;
 
-    // 1. Starta iPhonens bakkamera direkt när sidan laddas
     async function initKamera() {
         try {
             const stream = await navigator.mediaDevices.getUserMedia({
-                video: { facingMode: { exact: "environment" } }, // Tvingar baksidekamera
+                video: { facingMode: { exact: 'environment' } },
                 audio: false
             });
             video.srcObject = stream;
-            statusText.innerText = "Laddar AI-motor...";
-            initAI();
+            statusText.innerText = 'Laddar AI-motor...';
+            video.addEventListener('loadedmetadata', () => initAI(), { once: true });
         } catch (err) {
-            // Fallback om "exact environment" nekas (t.ex. på dator under test)
             try {
                 const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
                 video.srcObject = stream;
-                statusText.innerText = "Laddar AI-motor...";
-                initAI();
+                statusText.innerText = 'Laddar AI-motor...';
+                video.addEventListener('loadedmetadata', () => initAI(), { once: true });
             } catch (e) {
-                statusText.innerText = "Kameran blockeras. Kontrollera Safari-inställningarna.";
+                statusText.innerText = 'Kameran blockeras. Kontrollera Safari-inställningarna.';
+                console.error(e);
             }
         }
     }
 
-    // 2. Starta Tesseract-motorn i bakgrunden utan att krascha iPhone 15
     async function initAI() {
         try {
-            worker = await Tesseract.createWorker('swe', 1, {
-                workerPath: 'https://jsdelivr.net',
-                corePath: 'https://jsdelivr.net',
-            });
-            statusText.innerText = "Håll kameran stadigt mot priset...";
+            if (!window.Tesseract) {
+                throw new Error('Tesseract.js kunde inte laddas.');
+            }
+
+            worker = await Tesseract.createWorker('swe');
+            statusText.innerText = 'Håll kameran stadigt mot priset...';
             isScanning = true;
-            loopScanning(); // Starta loopen
+            loopScanning();
         } catch (err) {
-            statusText.innerText = "Kunde inte starta AI-motorn.";
+            statusText.innerText = 'Kunde inte starta AI-motorn.';
             console.error(err);
         }
     }
 
-    // 3. Ta en bildruta varannan sekund och skanna
     async function loopScanning() {
-        if (!isScanning) return;
+        if (!isScanning || video.readyState < 2) return;
 
-        // Rita av videorutan till vår dolda canvas (i låg upplösning så det går fort!)
         const ctx = canvas.getContext('2d');
-        canvas.width = 400; // Liten bredd = blixtsnabb analys och ingen minneskrasch
-        canvas.height = (video.videoHeight / video.videoWidth) * canvas.width;
+        if (!ctx) return;
+
+        const width = video.videoWidth || 640;
+        const height = video.videoHeight || 480;
+        canvas.width = 400;
+        canvas.height = Math.round((height / width) * canvas.width);
+
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
         const dataUrl = canvas.toDataURL('image/jpeg', 0.7);
@@ -218,45 +220,44 @@
             const { data: { text } } = await worker.recognize(dataUrl);
             tolkaText(text);
         } catch (e) {
-            console.log("Scan-miss, försöker igen...");
+            console.log('Scan-miss, försöker igen...');
         }
 
-        // Vänta 1.5 sekund innan nästa scanning görs för att spara batteri/prestanda
         setTimeout(loopScanning, 1500);
     }
 
     function tolkaText(text) {
-        console.log("Live text:", text);
-        // Letar efter priser som slutar på decimaler (t.ex. 24.90, 19,50, 45:)
-        const regex = /\b\d+(?:[\.,:]\d{2})?\b/g;
+        console.log('Live text:', text);
+        const regex = /\b\d+(?:[\.,:]\d{1,2})?\b/g;
         const matches = text.match(regex);
 
         if (matches && matches.length > 0) {
-            // Sortera ut rimliga alkoholpriser
             const priser = matches
                 .map(m => m.replace(':', '.').replace(',', '.'))
                 .map(m => parseFloat(m))
                 .filter(p => !isNaN(p) && p >= 8 && p < 400);
 
             if (priser.length > 0) {
-                let hittatPris = priser[0];
+                const hittatPris = priser[0];
                 detectedPriceText.innerText = hittatPris.toFixed(2);
-                
-                // Räkna ut APK direkt
+
                 const volym = parseFloat(document.getElementById('volume').value);
                 const alkohol = parseFloat(document.getElementById('abv').value);
-                
+
+                if (!Number.isFinite(volym) || !Number.isFinite(alkohol) || volym <= 0 || alkohol <= 0) {
+                    return;
+                }
+
                 const renAlkohol = volym * (alkohol / 100);
                 const apk = renAlkohol / hittatPris;
-                
+
                 apkResult.innerText = apk.toFixed(2);
-                statusText.innerText = "Pris avläst!";
+                statusText.innerText = 'Pris avläst!';
                 return;
             }
         }
     }
 
-    // Starta direkt vid laddning
     window.addEventListener('DOMContentLoaded', initKamera);
 </script>
 
