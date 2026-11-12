@@ -226,36 +226,68 @@
         setTimeout(loopScanning, 1500);
     }
 
-    function tolkaText(text) {
-        console.log('Live text:', text);
-        const regex = /\b\d+(?:[\.,:]\d{1,2})?\b/g;
-        const matches = text.match(regex);
+    function extractPriceCandidates(text) {
+        const lines = String(text || '').split(/\n+/);
+        const candidates = [];
 
-        if (matches && matches.length > 0) {
-            const priser = matches
-                .map(m => m.replace(':', '.').replace(',', '.'))
-                .map(m => parseFloat(m))
-                .filter(p => !isNaN(p) && p >= 8 && p < 400);
+        for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed) continue;
 
-            if (priser.length > 0) {
-                const hittatPris = priser[0];
-                detectedPriceText.innerText = hittatPris.toFixed(2);
+            const lower = trimmed.toLowerCase();
+            const hasCurrencyContext = /kr|sek|kronor|pris|price|cost|total|per/i.test(lower);
 
-                const volym = parseFloat(document.getElementById('volume').value);
-                const alkohol = parseFloat(document.getElementById('abv').value);
+            const matches = [
+                ...trimmed.matchAll(/\d{1,3}(?:[.,:]\d{2})/g),
+                ...(hasCurrencyContext ? trimmed.matchAll(/\b\d{1,3}\b/g) : [])
+            ];
 
-                if (!Number.isFinite(volym) || !Number.isFinite(alkohol) || volym <= 0 || alkohol <= 0) {
-                    return;
-                }
+            for (const match of matches) {
+                const raw = match[0];
+                const value = parseFloat(raw.replace(',', '.').replace(':', '.'));
 
-                const renAlkohol = volym * (alkohol / 100);
-                const apk = renAlkohol / hittatPris;
+                if (!Number.isFinite(value)) continue;
+                if (value < 8 || value >= 400) continue;
 
-                apkResult.innerText = apk.toFixed(2);
-                statusText.innerText = 'Pris avläst!';
-                return;
+                candidates.push(value);
             }
         }
+
+        return candidates;
+    }
+
+    function tolkaText(text) {
+        console.log('Live text:', text);
+
+        const candidates = extractPriceCandidates(text);
+        if (candidates.length === 0) return;
+
+        const counts = new Map();
+        for (const value of candidates) {
+            const key = Number(value.toFixed(2));
+            counts.set(key, (counts.get(key) || 0) + 1);
+        }
+
+        const bestPrice = [...counts.entries()]
+            .sort((a, b) => {
+                if (b[1] !== a[1]) return b[1] - a[1];
+                return Math.abs(a[0] - 39) - Math.abs(b[0] - 39);
+            })[0][0];
+
+        detectedPriceText.innerText = bestPrice.toFixed(2);
+
+        const volym = parseFloat(document.getElementById('volume').value);
+        const alkohol = parseFloat(document.getElementById('abv').value);
+
+        if (!Number.isFinite(volym) || !Number.isFinite(alkohol) || volym <= 0 || alkohol <= 0) {
+            return;
+        }
+
+        const renAlkohol = volym * (alkohol / 100);
+        const apk = renAlkohol / bestPrice;
+
+        apkResult.innerText = apk.toFixed(2);
+        statusText.innerText = 'Pris avläst!';
     }
 
     window.addEventListener('DOMContentLoaded', initKamera);
